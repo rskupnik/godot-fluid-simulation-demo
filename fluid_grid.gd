@@ -5,6 +5,8 @@ extends Node2D
 
 @export var density_fade_rate := 0.1
 
+@export var velocity_draw_scale := 20.0
+
 var size := 0
 
 # Density means "how much material does this cell contain"
@@ -32,6 +34,24 @@ func _ready():
 	v.resize(size)
 	u_prev.resize(size)
 	v_prev.resize(size)
+	
+	# TEMPORARY
+	# In this cell, we set the horizontal velocity to 1.0 and vertical to 0.0
+	# Result: horizontal arrow pointing right
+	u[IX(8, 8)] = 1.0
+	v[IX(8, 8)] = 0.0
+	
+	# In this cell, we set the horizontal velocity to 0.0 and vertical to -1.0
+	# Result: vertical arrow pointing up
+	# Remember that in Godot, the y axis goes from top to bottom, hence why -1.0 points up
+	u[IX(9, 8)] = 0.0
+	v[IX(9, 8)] = -1.0
+	
+	# In this cell, we set the horizontal velocity to 1.0 and vertical to -1.0
+	# Result: vertical arrow pointing up and right (diagonal)
+	# Remember that in Godot, the y axis goes from top to bottom, hence why -1.0 points up
+	u[IX(10, 8)] = 1.0
+	v[IX(10, 8)] = -1.0
 
 	queue_redraw()
 
@@ -83,7 +103,13 @@ func _process(delta: float) -> void:
 
 # This is the standard Godot function used for drawing
 # We want to draw a simple grid of (N+2)*(N+2) rectangles of size cell_size
+# We also want to draw velocities at each cell as lines
 func _draw():
+	_draw_grid()
+	_draw_velocity_arrows()
+
+# Draw the grid of (N+2)*(N+2) with different colors for inner and boundary cells
+func _draw_grid():
 	for j in range(0, N + 2):
 		for i in range(0, N + 2):
 			var x := i * cell_size	# this translates the index into pixel position on screen
@@ -101,3 +127,21 @@ func _draw():
 
 			draw_rect(rect, fill, true)
 			draw_rect(rect, Color(0.35, 0.35, 0.35), false)
+
+# Draw velocity arrows in inner cells with tiny circles as arrow tips
+func _draw_velocity_arrows():
+	for j in range(0, N + 2):
+		for i in range(0, N + 2):
+			var is_boundary := i == 0 or j == 0 or i == N + 1 or j == N + 1
+			if not is_boundary:
+				var idx := IX(i, j)
+				var center := Vector2(
+					i * cell_size + cell_size * 0.5,
+					j * cell_size + cell_size * 0.5
+				)
+
+				var velocity := Vector2(u[idx], v[idx])
+				var end := center + velocity * velocity_draw_scale
+
+				draw_line(center, end, Color(0.2, 0.8, 1.0), 2.0)
+				draw_circle(end, 2.5, Color(0.2, 0.8, 1.0))
