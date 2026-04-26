@@ -7,6 +7,7 @@ extends Node2D
 
 @export var velocity_draw_scale := 20.0
 @export var velocity_add_scale := 0.06
+@export var velocity_fade_rate := 0.2
 
 var is_dragging := false
 var last_mouse_cell := Vector2i.ZERO
@@ -65,6 +66,16 @@ func fade_density(delta: float) -> void:
 			# to make it the same despite the framerate
 			density[idx] = max(0.0, density[idx] - density_fade_rate * delta)
 
+# Fade velocity as the time passes
+func fade_velocity(delta: float) -> void:
+	for j in range(1, N + 1):
+		for i in range(1, N + 1):
+			var idx := IX(i, j)
+			# We need to multiply the rate of velocity fade through delta
+			# to make it the same despite the framerate
+			u[idx] = move_toward(u[idx], 0.0, velocity_fade_rate * delta)
+			v[idx] = move_toward(v[idx], 0.0, velocity_fade_rate * delta)
+
 # This is the standard Godot function for processing input
 # We want to detect when a mouse is dragged while clicked and the inject
 # both density and velocity at the relevant cells
@@ -101,9 +112,10 @@ func _input(event):
 # This is the standard Godot function called every frame
 # It's the heart of our simulation
 # The "delta" variable hold the amount of time that passed since the last frame
-# For now we use it to slowly fade the density
+# For now we use it to slowly fade the density and velocity
 func _process(delta: float) -> void:
 	fade_density(delta)
+	fade_velocity(delta)
 	queue_redraw()
 
 # This is the standard Godot function used for drawing
