@@ -6,6 +6,10 @@ extends Node2D
 @export var density_fade_rate := 0.1
 
 @export var velocity_draw_scale := 20.0
+@export var velocity_add_scale := 0.06
+
+var is_dragging := false
+var last_mouse_cell := Vector2i.ZERO
 
 var size := 0
 
@@ -34,24 +38,6 @@ func _ready():
 	v.resize(size)
 	u_prev.resize(size)
 	v_prev.resize(size)
-	
-	# TEMPORARY
-	# In this cell, we set the horizontal velocity to 1.0 and vertical to 0.0
-	# Result: horizontal arrow pointing right
-	u[IX(8, 8)] = 1.0
-	v[IX(8, 8)] = 0.0
-	
-	# In this cell, we set the horizontal velocity to 0.0 and vertical to -1.0
-	# Result: vertical arrow pointing up
-	# Remember that in Godot, the y axis goes from top to bottom, hence why -1.0 points up
-	u[IX(9, 8)] = 0.0
-	v[IX(9, 8)] = -1.0
-	
-	# In this cell, we set the horizontal velocity to 1.0 and vertical to -1.0
-	# Result: vertical arrow pointing up and right (diagonal)
-	# Remember that in Godot, the y axis goes from top to bottom, hence why -1.0 points up
-	u[IX(10, 8)] = 1.0
-	v[IX(10, 8)] = -1.0
 
 	queue_redraw()
 
@@ -80,18 +66,37 @@ func fade_density(delta: float) -> void:
 			density[idx] = max(0.0, density[idx] - density_fade_rate * delta)
 
 # This is the standard Godot function for processing input
-# We want to detect a mouse click and inject density into the clicked cell
-# Density is represented as a float number and is stored in the "density" array
+# We want to detect when a mouse is dragged while clicked and the inject
+# both density and velocity at the relevant cells
 func _input(event):
-	if event is InputEventMouseButton and event.pressed:
-		# figure out the cell that was clicked
-		var cell := cell_from_mouse(to_local(event.position))
+	if event is InputEventMouseButton:
+		is_dragging = event.pressed
+		last_mouse_cell = cell_from_mouse(to_local(event.position))
+
+	if event is InputEventMouseMotion and is_dragging:
+		var local_pos := to_local(event.position)
+		var cell := cell_from_mouse(local_pos)
+
 		var i := cell.x
 		var j := cell.y
 
 		if i >= 1 and i <= N and j >= 1 and j <= N:
-			density[IX(i, j)] += 1.0	# inject density into the cell
-			queue_redraw()				# tell Godot to redraw the grid
+			# event.relative stores the relative difference between last time
+			# this function was called and this time
+			# in this case, it tells us how far the mouse has travelled
+			# we use that to decide how much velocity to add
+			var delta_velocity : Vector2 = event.relative * velocity_add_scale
+			var idx := IX(i, j)
+
+			# Inject the velocity into the cell
+			# u stores horizontal velocity, v stores vertical velocity
+			u[idx] += delta_velocity.x
+			v[idx] += delta_velocity.y
+
+			# Inject density
+			density[idx] += 1.0
+
+			queue_redraw()
 
 # This is the standard Godot function called every frame
 # It's the heart of our simulation
