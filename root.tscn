@@ -1,0 +1,8 @@
+[gd_scene format=3 uid="uid://dinwp7ts127wp"]
+
+[ext_resource type="Script" uid="uid://cyddfa7y228pr" path="res://fluid_grid.gd" id="1_pq8q7"]
+
+[node name="Root" type="Node2D" unique_id=763459979]
+
+[node name="FluidGrid" type="Node2D" parent="." unique_id=200343285]
+script = ExtResource("1_pq8q7")
