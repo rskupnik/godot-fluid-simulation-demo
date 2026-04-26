@@ -40,6 +40,28 @@ func _ready():
 func IX(i: int, j: int) -> int:
 	return i + (N + 2) * j
 
+# This helper function translates the position we clicked on with the mouse
+# into the cell coordinates
+# So if we click somewhere in the grid, it will return a Vector2i, where the
+# first element is the index of the cell in that grid in x dimension
+# and the other element is the index of the cell in the y dimension
+func cell_from_mouse(pos: Vector2) -> Vector2i:
+	return Vector2i(floor(pos.x / cell_size), floor(pos.y / cell_size))
+
+# This is the standard Godot function for processing input
+# We want to detect a mouse click and inject density into the clicked cell
+# Density is represented as a float number and is stored in the "density" array
+func _input(event):
+	if event is InputEventMouseButton and event.pressed:
+		# figure out the cell that was clicked
+		var cell := cell_from_mouse(to_local(event.position))
+		var i := cell.x
+		var j := cell.y
+
+		if i >= 1 and i <= N and j >= 1 and j <= N:
+			density[IX(i, j)] += 1.0	# inject density into the cell
+			queue_redraw()				# tell Godot to redraw the grid
+
 # This is the standard Godot function used for drawing
 # We want to draw a simple grid of (N+2)*(N+2) rectangles of size cell_size
 func _draw():
@@ -50,7 +72,13 @@ func _draw():
 			var rect := Rect2(x, y, cell_size, cell_size)
 
 			var is_boundary := i == 0 or j == 0 or i == N + 1 or j == N + 1
-			var fill := Color(0.16, 0.08, 0.08) if is_boundary else Color(0.08, 0.08, 0.08)
+			var fill := Color(0.08, 0.08, 0.08)
+			if is_boundary:
+				fill = Color(0.16, 0.08, 0.08)
+			else:
+				# Even though density can go above 1.0, we need to clamp it to values between 0.0 and 1.0 for drawing
+				var d : float = clamp(density[IX(i, j)], 0.0, 1.0)
+				fill = Color(d, d, d)
 
 			draw_rect(rect, fill, true)
 			draw_rect(rect, Color(0.35, 0.35, 0.35), false)
