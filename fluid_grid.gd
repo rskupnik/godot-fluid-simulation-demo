@@ -3,6 +3,8 @@ extends Node2D
 @export var N := 16				# Amount of cells in rows and columns (size of the grid)
 @export var cell_size := 32		# Size of a single cell in pixels
 
+@export var density_fade_rate := 0.1
+
 var size := 0
 
 # Density means "how much material does this cell contain"
@@ -48,6 +50,15 @@ func IX(i: int, j: int) -> int:
 func cell_from_mouse(pos: Vector2) -> Vector2i:
 	return Vector2i(floor(pos.x / cell_size), floor(pos.y / cell_size))
 
+# Fade density as the time passes
+func fade_density(delta: float) -> void:
+	for j in range(1, N + 1):
+		for i in range(1, N + 1):
+			var idx := IX(i, j)
+			# We need to multiply the rate of density fade through delta
+			# to make it the same despite the framerate
+			density[idx] = max(0.0, density[idx] - density_fade_rate * delta)
+
 # This is the standard Godot function for processing input
 # We want to detect a mouse click and inject density into the clicked cell
 # Density is represented as a float number and is stored in the "density" array
@@ -61,6 +72,14 @@ func _input(event):
 		if i >= 1 and i <= N and j >= 1 and j <= N:
 			density[IX(i, j)] += 1.0	# inject density into the cell
 			queue_redraw()				# tell Godot to redraw the grid
+
+# This is the standard Godot function called every frame
+# It's the heart of our simulation
+# The "delta" variable hold the amount of time that passed since the last frame
+# For now we use it to slowly fade the density
+func _process(delta: float) -> void:
+	fade_density(delta)
+	queue_redraw()
 
 # This is the standard Godot function used for drawing
 # We want to draw a simple grid of (N+2)*(N+2) rectangles of size cell_size
