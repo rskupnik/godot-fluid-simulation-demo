@@ -3,11 +3,13 @@ extends Node2D
 @export var N := 16				# Amount of cells in rows and columns (size of the grid)
 @export var cell_size := 32		# Size of a single cell in pixels
 
-@export var density_fade_rate := 0.1
+@export var density_fade_rate := 0.1			# Strength of density fade effect
+@export var density_diffuse_rate := 0.006		# Strength of density diffusion effect
+@export var density_diffuse_iterations := 20	# How many iterations when diffusing density
 
 @export var velocity_draw_scale := 20.0
 @export var velocity_add_scale := 0.06
-@export var velocity_fade_rate := 0.2
+@export var velocity_fade_rate := 0.2			# Strength of velocity fade effect
 
 var is_dragging := false
 var last_mouse_cell := Vector2i.ZERO
@@ -158,6 +160,34 @@ func advect_density(delta: float) -> void:
 				s1 * (t0 * density_prev[IX(i1, j0)] + t1 * density_prev[IX(i1, j1)])
 			)
 
+# Diffusion simply means spreading the density to the neighbouring cells
+# Think of it like putting a drop of paint in water - it will spread
+# This uses what is called "Gauss-Seidel relaxation", which basically means
+# we keep "guessing" (or rather approximating) the value density_diffuse_rate times
+# With enough iterations, this is close enough for the simulation to be believable
+func diffuse_density(delta: float) -> void:
+	
+	# This is the strength of diffusion effect for this frame
+	# Delta is how much time passed
+	# Then we have the density diffusion strength parameter
+	# Finally we multiply by N squared so it square with cell size
+	var a := delta * density_diffuse_rate * N * N
+
+	for k in range(density_diffuse_iterations):
+		for j in range(1, N + 1):
+			for i in range(1, N + 1):
+				var idx := IX(i, j)
+
+				density[idx] = (
+					density_prev[idx] +				# This is the "anchor" - the original value at this cell, which stays constant throughout iterations (hence called "anchor")
+					a * (							# Here we multiple the strength of the effect with the sum of densities of all neighbours - this is the heart of "Gauss-Seidel" relaxation
+						density[IX(i - 1, j)] +		# These are
+						density[IX(i + 1, j)] +		# the four
+						density[IX(i, j - 1)] +		# neighbours
+						density[IX(i, j + 1)]		# :)
+					)
+				) / (1.0 + 4.0 * a)					# This balances the math, since we add densities from 5 cells (this one + 4 neighbours). Without this, the density would grow too much (try it!)
+
 # This is the standard Godot function for processing input
 # We want to detect when a mouse is dragged while clicked and the inject
 # both density and velocity at the relevant cells
@@ -195,6 +225,9 @@ func _input(event):
 # It's the heart of our simulation
 # The "delta" variable hold the amount of time that passed since the last frame
 func _process(delta: float) -> void:
+	copy_density_to_prev()
+	diffuse_density(delta)
+	
 	copy_density_to_prev()
 	advect_density(delta)
 	
