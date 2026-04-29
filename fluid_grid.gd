@@ -76,6 +76,88 @@ func fade_velocity(delta: float) -> void:
 			u[idx] = move_toward(u[idx], 0.0, velocity_fade_rate * delta)
 			v[idx] = move_toward(v[idx], 0.0, velocity_fade_rate * delta)
 
+func copy_density_to_prev() -> void:
+	for idx in range(size):
+		density_prev[idx] = density[idx]
+
+# Advection of density means "moving density through the velocity field"
+# With this function we make our density react to the velocity and move along it
+# Your first instinct on implementing such a function might be to go through each cell and check
+# where its velocity points to and then move the density there - but this is not performant
+# We do something else here - we move BACKWARDS THROUGH TIME. For each grid cell we make use
+# of the velocity there to deduce where the density in that cell probably came from.
+# You might think that's incorrect, because the velocity in a cell might point to the right
+# but that doesn't mean that the density it contains came from the left - it might have just as well
+# came from the top cell, why not? You would be right! But we need to recognize two things here:
+# one is that we are dealing with a FIELD of velocities, which is unlikely to do such harsh turns;
+# two is that we need to sacrifice accuracy for performance at some point - this is one of those points
+func advect_density(delta: float) -> void:
+	# Multiply delta by N to scale the time by grid size
+	var dt0 := delta * N
+
+	for j in range(1, N + 1):
+		for i in range(1, N + 1):
+			var idx := IX(i, j)
+
+			# Notice this tracks backwards through time
+			# First we subtract the velocity in this cell (multiplied by delta)
+			# from the cell index
+			# That tells us where the density in this cell came from (probably)
+			# Then we clamp to make sure we don't go outside the grid
+			# The result will be a position of where the density probably came from, lying somewhere
+			# between other grid cells
+			var x := i - dt0 * u[idx]
+			var y := j - dt0 * v[idx]
+			x = clamp(x, 0.5, N + 0.5)
+			y = clamp(y, 0.5, N + 0.5)
+
+			# This grabs the four cells surrounding the point that we end at above
+			# Imagine we end at a point (7.3, 4.8)
+			# The four cells around this point (including the one it is part of)
+			# will be: (7,4) (8,4) (7,5) (8,5), because
+			# i0 = 7
+			# i1 = 8
+			# j0 = 4
+			# j1 = 5
+			# (it's a combination of all "i" with all "j")
+			var i0 := int(floor(x))
+			var i1 := i0 + 1
+			var j0 := int(floor(y))
+			var j1 := j0 + 1
+
+			# These are fractional weights
+			# They tell us how close the point is to each side
+			# Consider example where our point is at (7.3, 4.8)
+			# That gives us: s1 = 0.3, s0 = 0.7, t1 = 0.8, t0 = 0.2
+			# Basically we extract the decimal part into s1 and t1
+			# And then we put "the rest that is missing to 1.0" into s0 and t0
+			# ---
+			# What this tells us, is basically that:
+			# the point is at 30% distance from left side and 70% distance from right side
+			# which means it should be influenced stronger by the left side and less by the right side
+			# Same for y dimension, the point is at 80% distance towards bottom and 20% towards top
+			var s1 := x - i0
+			var s0 := 1.0 - s1
+			var t1 := y - j0
+			var t0 := 1.0 - t1
+
+			# With neighbouring tiles and the fractional weights calculated,
+			# we now need to decide how much density we should grab from each neighbouring tile
+			# based on how close we are to it (fractional weights tells us that)
+			# This function does exactly that. It's a standard mathematical operation called
+			# "bilinear interpolation". You might be familiar with "linear interpolation", often
+			# called "lerp" in the gamedev world, which interpolates between values in a single
+			# dimension (line). Bilinear interpolation does the same, except in two dimensions (lines)
+			# ---
+			# Notice also that we make use of the density_prev array here. That's because we
+			# keep updating the density array as we iterate, so we need to "snapshot" the densities
+			# before we start iterating - otherwise we would mess up results as they would keep changing
+			# So density_prev is pretty much a "snapshot of density before we start modifying it"
+			density[idx] = (
+				s0 * (t0 * density_prev[IX(i0, j0)] + t1 * density_prev[IX(i0, j1)]) +
+				s1 * (t0 * density_prev[IX(i1, j0)] + t1 * density_prev[IX(i1, j1)])
+			)
+
 # This is the standard Godot function for processing input
 # We want to detect when a mouse is dragged while clicked and the inject
 # both density and velocity at the relevant cells
@@ -112,10 +194,13 @@ func _input(event):
 # This is the standard Godot function called every frame
 # It's the heart of our simulation
 # The "delta" variable hold the amount of time that passed since the last frame
-# For now we use it to slowly fade the density and velocity
 func _process(delta: float) -> void:
+	copy_density_to_prev()
+	advect_density(delta)
+	
 	fade_density(delta)
 	fade_velocity(delta)
+	
 	queue_redraw()
 
 # This is the standard Godot function used for drawing
