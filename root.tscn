@@ -6,5 +6,6 @@
 
 [node name="FluidGrid" type="Node2D" parent="." unique_id=200343285]
 script = ExtResource("1_pq8q7")
-velocity_add_scale = 0.12
+velocity_add_scale = 0.2
+velocity_fade_rate = 0.02
 velocity_diffuse_rate = 0.01

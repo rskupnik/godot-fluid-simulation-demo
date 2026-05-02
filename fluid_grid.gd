@@ -168,6 +168,54 @@ func advect_density(delta: float) -> void:
 			)
 	set_bnd(BoundaryType.DENSITY, density)
 
+# When we advect density, we move density along the velocity field
+# Here we do the same but with the velocity itself - so we move velocity along the velocity field
+# This simulates sort of "momentum"
+# It works exactly the same way as advecting density, with one caveat - we have to snapshot the
+# velocity arrays and use the snapshot as source (because we modify the actual velocity array in this function,
+# which doesn't happen for density)
+# See "advect_density" function for details
+func advect_velocity(delta: float) -> void:
+	var dt0 := delta * N
+
+	for j in range(1, N + 1):
+		for i in range(1, N + 1):
+			var idx := IX(i, j)
+
+			# Go backwards through time
+			# Notice we are using u_prev and v_prev here - we need stable values
+			# The rest of the function is the same as for advecting density
+			var x := i - dt0 * u_prev[idx]
+			var y := j - dt0 * v_prev[idx]
+			x = clamp(x, 0.5, N + 0.5)
+			y = clamp(y, 0.5, N + 0.5)
+
+			# Find cell neighborus for the point we arrive at
+			var i0 := int(floor(x))
+			var i1 := i0 + 1
+			var j0 := int(floor(y))
+			var j1 := j0 + 1
+
+			# Calculate fractional weights
+			var s1 := x - i0
+			var s0 := 1.0 - s1
+			var t1 := y - j0
+			var t0 := 1.0 - t1
+
+			# Approximate the values using bilinear interpolation
+			u[idx] = (
+				s0 * (t0 * u_prev[IX(i0, j0)] + t1 * u_prev[IX(i0, j1)]) +
+				s1 * (t0 * u_prev[IX(i1, j0)] + t1 * u_prev[IX(i1, j1)])
+			)
+
+			v[idx] = (
+				s0 * (t0 * v_prev[IX(i0, j0)] + t1 * v_prev[IX(i0, j1)]) +
+				s1 * (t0 * v_prev[IX(i1, j0)] + t1 * v_prev[IX(i1, j1)])
+			)
+
+	set_bnd(BoundaryType.VELOCITY_HORIZONTAL, u)
+	set_bnd(BoundaryType.VELOCITY_VERTICAL, v)
+
 # Diffusion simply means spreading the density to the neighbouring cells
 # Think of it like putting a drop of paint in water - it will spread
 # This uses what is called "Gauss-Seidel relaxation", which basically means
@@ -376,6 +424,9 @@ func _input(event):
 func _process(delta: float) -> void:
 	copy_velocity_to_prev()
 	diffuse_velocity(delta)
+	
+	copy_velocity_to_prev()
+	advect_velocity(delta)
 	
 	copy_density_to_prev()
 	diffuse_density(delta)
