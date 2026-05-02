@@ -159,6 +159,7 @@ func advect_density(delta: float) -> void:
 				s0 * (t0 * density_prev[IX(i0, j0)] + t1 * density_prev[IX(i0, j1)]) +
 				s1 * (t0 * density_prev[IX(i1, j0)] + t1 * density_prev[IX(i1, j1)])
 			)
+	set_bnd(BoundaryType.DENSITY, density)
 
 # Diffusion simply means spreading the density to the neighbouring cells
 # Think of it like putting a drop of paint in water - it will spread
@@ -187,6 +188,105 @@ func diffuse_density(delta: float) -> void:
 						density[IX(i, j + 1)]		# :)
 					)
 				) / (1.0 + 4.0 * a)					# This balances the math, since we add densities from 5 cells (this one + 4 neighbours). Without this, the density would grow too much (try it!)
+		set_bnd(BoundaryType.DENSITY, density)
+
+# This is the "original" function as defined in the Stam paper
+# It is NOT USED by this program. I left it only for reference
+# It is much more performant because it doesn't declare needless variables
+# But that also make is harder to understand what is going on here
+func set_bnd_original(b: int, grid: PackedFloat32Array) -> void:
+	for i in range(1, N + 1):
+		grid[IX(0, i)] = -grid[IX(1, i)] if b == 1 else grid[IX(1, i)]
+		grid[IX(N + 1, i)] = -grid[IX(N, i)] if b == 1 else grid[IX(N, i)]
+
+		grid[IX(i, 0)] = -grid[IX(i, 1)] if b == 2 else grid[IX(i, 1)]
+		grid[IX(i, N + 1)] = -grid[IX(i, N)] if b == 2 else grid[IX(i, N)]
+
+	grid[IX(0, 0)] = 0.5 * (grid[IX(1, 0)] + grid[IX(0, 1)])
+	grid[IX(0, N + 1)] = 0.5 * (grid[IX(1, N + 1)] + grid[IX(0, N)])
+	grid[IX(N + 1, 0)] = 0.5 * (grid[IX(N, 0)] + grid[IX(N + 1, 1)])
+	grid[IX(N + 1, N + 1)] = 0.5 * (grid[IX(N, N + 1)] + grid[IX(N + 1, N)])
+
+enum BoundaryType {
+	DENSITY,
+	VELOCITY_HORIZONTAL,
+	VELOCITY_VERTICAL
+}
+
+# This function handles boundary cells, which are not part of the simulation. It effectively
+# establishes a "wall". We do this by making each boundary cell copy values of their simulated neighbour,
+# modifying them accordingly if needed.
+# For density, we simply copy the value, simulating fluid spilling out of the box.
+# This happens for both density advection (moving along velocity field) and for diffusion
+# For velocity, we also copy the value of a simulated neighbour but we invert part of it.
+# For top/bottom walls, we invert the vertical values, for left/right we invert the horizontal values
+# This makes the boundaries behave as "walls" for velocity
+# Note: I realize declaring so many needless variables is bad for performance. This is done on purpose
+# to make it easier to understand what is going on here. Original function included, see "set_bnd_original"
+func set_bnd(boundary: BoundaryType, grid: PackedFloat32Array) -> void:
+	
+	# We iterate from 1 to N+1 because we want to tackle boundaries, which are a single row/column
+	for i in range(1, N + 1):
+		
+		# These define the indexes of boundary cells (the red ones)
+		# We will set values for those
+		var left_boundary_cell_index = IX(0, i)
+		var right_boundary_cell_index = IX(N + 1, i)
+		var bottom_boundary_cell_index = IX(i, 0)
+		var top_boundary_cell_index = IX(i, N + 1)
+		
+		# These define the nearest cell neighbour of a boundary cell that is a real cell
+		# We will copy values from those
+		var leftmost_simulated_cell_index = IX(1, i)
+		var rightmost_simulated_cell_index = IX(N, i)
+		var bottommost_simulated_cell_index = IX(i, 1)
+		var topmost_simulated_cell_index = IX(i, N)
+		
+		# For density, we simply copy the value of the nearest simulated cell
+		if boundary == BoundaryType.DENSITY:
+			grid[left_boundary_cell_index] = grid[leftmost_simulated_cell_index]
+			grid[right_boundary_cell_index] = grid[rightmost_simulated_cell_index]
+			grid[bottom_boundary_cell_index] = grid[bottommost_simulated_cell_index]
+			grid[top_boundary_cell_index] = grid[topmost_simulated_cell_index]
+		
+		# For horizontal velocity, we flip the values on the horizontal axis (the boundary wall
+		# "reflects" the velocity) and just copy the vertical values
+		elif boundary == BoundaryType.VELOCITY_HORIZONTAL:
+			grid[left_boundary_cell_index] = -grid[leftmost_simulated_cell_index]
+			grid[right_boundary_cell_index] = -grid[rightmost_simulated_cell_index]
+			grid[bottom_boundary_cell_index] = grid[bottommost_simulated_cell_index]
+			grid[top_boundary_cell_index] = grid[topmost_simulated_cell_index]
+		
+		# For vertical velocity, we flip the values on the vertical axis (the boundary wall
+		# "reflects" the velocity) and just copy the horizontal values
+		elif boundary == BoundaryType.VELOCITY_VERTICAL:
+			grid[left_boundary_cell_index] = grid[leftmost_simulated_cell_index]
+			grid[right_boundary_cell_index] = grid[rightmost_simulated_cell_index]
+			grid[bottom_boundary_cell_index] = -grid[bottommost_simulated_cell_index]
+			grid[top_boundary_cell_index] = -grid[topmost_simulated_cell_index]
+
+	# Corners
+	# Boundary corner cells are a special case because they have two neighbours (both of which are boundary cells as well)
+	# Since we already set the values for all the other boundary cells in the loop above,
+	# here we just set each corner to an average of their two neighbours
+	# For ease of understanding I labeled the vars with SW like South-West, etc.
+	var corner_SW = IX(0, 0)
+	var corner_SW_right_neighbour = IX(1, 0)
+	var corner_SW_top_neighbour = IX(0, 1)
+	var corner_NW = IX(0, N + 1)
+	var corner_NW_right_neighbour = IX(1, N + 1)
+	var corner_NW_bottom_neighbour = IX(0, N)
+	var corner_SE = IX(N + 1, 0)
+	var corner_SE_left_neighbour = IX(N, 0)
+	var corner_SE_top_neighbour = IX(N + 1, 1)
+	var corner_NE = IX(N + 1, N + 1)
+	var corner_NE_left_neighbour = IX(N, N + 1)
+	var corner_NE_bottom_neighbour = IX(N + 1, N)
+	
+	grid[corner_SW] = 0.5 * (grid[corner_SW_right_neighbour] + grid[corner_SW_top_neighbour])		# SW corner = right neighbour + top neighbour
+	grid[corner_NW] = 0.5 * (grid[corner_NW_right_neighbour] + grid[corner_NW_bottom_neighbour])	# NW corner = right neighbour + bottom neighbour
+	grid[corner_SE] = 0.5 * (grid[corner_SE_left_neighbour] + grid[corner_SE_top_neighbour])		# SE corner = left neighbour + top neighbour
+	grid[corner_NE] = 0.5 * (grid[corner_NE_left_neighbour] + grid[corner_NE_bottom_neighbour])		# NE corner = left neighbour + bottom neighbour
 
 # This is the standard Godot function for processing input
 # We want to detect when a mouse is dragged while clicked and the inject
