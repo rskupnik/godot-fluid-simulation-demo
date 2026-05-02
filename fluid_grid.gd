@@ -10,6 +10,8 @@ extends Node2D
 @export var velocity_draw_scale := 20.0
 @export var velocity_add_scale := 0.06
 @export var velocity_fade_rate := 0.2			# Strength of velocity fade effect
+@export var velocity_diffuse_rate := 0.001		# Strength of velocity diffusion effect
+@export var velocity_diffuse_iterations := 20	# How many iterations when diffusing velocity
 
 var is_dragging := false
 var last_mouse_cell := Vector2i.ZERO
@@ -81,6 +83,11 @@ func fade_velocity(delta: float) -> void:
 func copy_density_to_prev() -> void:
 	for idx in range(size):
 		density_prev[idx] = density[idx]
+
+func copy_velocity_to_prev() -> void:
+	for idx in range(size):
+		u_prev[idx] = u[idx]
+		v_prev[idx] = v[idx]
 
 # Advection of density means "moving density through the velocity field"
 # With this function we make our density react to the velocity and move along it
@@ -171,7 +178,7 @@ func diffuse_density(delta: float) -> void:
 	# This is the strength of diffusion effect for this frame
 	# Delta is how much time passed
 	# Then we have the density diffusion strength parameter
-	# Finally we multiply by N squared so it square with cell size
+	# Finally we multiply by N squared so it scales with cell size
 	var a := delta * density_diffuse_rate * N * N
 
 	for k in range(density_diffuse_iterations):
@@ -189,6 +196,48 @@ func diffuse_density(delta: float) -> void:
 					)
 				) / (1.0 + 4.0 * a)					# This balances the math, since we add densities from 5 cells (this one + 4 neighbours). Without this, the density would grow too much (try it!)
 		set_bnd(BoundaryType.DENSITY, density)
+
+# Diffusion here can be understood as "spreading among neighbour cells"
+# Just as we diffuse density, we now do the same for velocity
+# This is pretty much exactly the same as density diffusion, except it does it for two arrays
+# (because we store horizontal and vertical velocity separately)
+# It uses the same "Gauss-Seidel relaxation" formula
+func diffuse_velocity(delta: float) -> void:
+	
+	# This is the strength of diffusion effect for this frame
+	# Delta is how much time passed
+	# Then we have the velocity diffusion strength parameter
+	# Finally we multiply by N squared so it scales with cell size
+	var a := delta * velocity_diffuse_rate * N * N
+
+	for k in range(velocity_diffuse_iterations):
+		for j in range(1, N + 1):
+			for i in range(1, N + 1):
+				var idx := IX(i, j)
+
+				# Those are exactly the same formulas as for density
+				# See density diffusion function for explanations :)
+				u[idx] = (
+					u_prev[idx] +
+					a * (
+						u[IX(i - 1, j)] +
+						u[IX(i + 1, j)] +
+						u[IX(i, j - 1)] +
+						u[IX(i, j + 1)]
+					)
+				) / (1.0 + 4.0 * a)
+
+				v[idx] = (
+					v_prev[idx] +
+					a * (
+						v[IX(i - 1, j)] +
+						v[IX(i + 1, j)] +
+						v[IX(i, j - 1)] +
+						v[IX(i, j + 1)]
+					)
+				) / (1.0 + 4.0 * a)
+		set_bnd(BoundaryType.VELOCITY_HORIZONTAL, u)
+		set_bnd(BoundaryType.VELOCITY_VERTICAL, v)
 
 # This is the "original" function as defined in the Stam paper
 # It is NOT USED by this program. I left it only for reference
@@ -325,6 +374,9 @@ func _input(event):
 # It's the heart of our simulation
 # The "delta" variable hold the amount of time that passed since the last frame
 func _process(delta: float) -> void:
+	copy_velocity_to_prev()
+	diffuse_velocity(delta)
+	
 	copy_density_to_prev()
 	diffuse_density(delta)
 	
