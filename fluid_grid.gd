@@ -30,6 +30,11 @@ var u_prev: PackedFloat32Array
 var v: PackedFloat32Array
 var v_prev: PackedFloat32Array
 
+# TODO: What are those?
+# Helper fields for projection
+var pressure: PackedFloat32Array
+var divergence: PackedFloat32Array
+
 func _ready():
 	# Resize all the arrays properly
 	# We use single array to store a grid, which is why we need to multiply N
@@ -43,6 +48,8 @@ func _ready():
 	v.resize(size)
 	u_prev.resize(size)
 	v_prev.resize(size)
+	pressure.resize(size)
+	divergence.resize(size)
 
 	queue_redraw()
 
@@ -166,7 +173,7 @@ func advect_density(delta: float) -> void:
 				s0 * (t0 * density_prev[IX(i0, j0)] + t1 * density_prev[IX(i0, j1)]) +
 				s1 * (t0 * density_prev[IX(i1, j0)] + t1 * density_prev[IX(i1, j1)])
 			)
-	set_bnd(BoundaryType.DENSITY, density)
+	set_bnd(BoundaryType.SCALAR, density)
 
 # When we advect density, we move density along the velocity field
 # Here we do the same but with the velocity itself - so we move velocity along the velocity field
@@ -216,6 +223,88 @@ func advect_velocity(delta: float) -> void:
 	set_bnd(BoundaryType.VELOCITY_HORIZONTAL, u)
 	set_bnd(BoundaryType.VELOCITY_VERTICAL, v)
 
+# Projection is what makes the simulation behave natural
+# We want to simulate an incompressible fluid, which means that density should neither magically
+# "pile-up" (compress) or "vanish" (decompress) - basically we want it to conserve mass
+# The problem is that both velocity diffusion and velocity advection cause these "artifacts"
+# To solve this, we need to perform projection with two helper arrays: divergence and pressure
+# I call them "helper" arrays because we don't render them (like we do density and velocity arrays)
+# We just use them for calculation and correction
+# Divergence measures how much density flows out and into the cell. Positive divergence means
+# more density is flowing out than is flowing in. Negative - the opposite. Zero divergence means
+# there's balance - and that's what we want.
+# Pressure is calculated from divergence and tells us "how much correction should be applied to 
+# counteract the divergence"
+# High pressure pushes velocity away, low pressure pulls velocity in, pressure gradient tells us
+# the direction and strength of the flow - that can counteract the divergence effects and make the fluid behave realistically
+# This is what projection is - a way of finding such a pressure field that will cancel out the
+# divergence, in effect making the simulated fluid conserve mass
+# We want to answer the question: "What pressure field p should I subtract so the result velocity has no divergence?"
+# This basically gives us a Poisson equation: laplacian(pressure) = divergence
+# Solving this exactly is way too expensive computation-wise, so we will use the tool we already know -
+# - Gauss-Seidel relaxation - to approximate a good-enough answer
+func project_velocity() -> void:
+	var h := 1.0 / N	# This is a scaling factor for our grid (basically the distance between one cell center and a neighbouring cell center)
+
+	for j in range(1, N + 1):
+		for i in range(1, N + 1):
+			
+			# We calculate divergence by observing the velocities of neghbouring cells
+			# Remember - we want to check if the fluid flowing in and out of this cell is in balance or not
+			# Velocity of the neighbours will tell us that. For vertical velocity we look one cell down and one cell up
+			# For horzontal velocity - one cell to the left and one to the right
+			divergence[IX(i, j)] = -0.5 * h * (			# Multiplying by 0.5 centers the difference because we are looking at two neighbours
+														# The negative sign is just for convenience - it matches the later equation of where pressure is added to the Poisson solve
+				u[IX(i + 1, j)] - u[IX(i - 1, j)] +		# Horizontal velocity to the left and right
+				v[IX(i, j + 1)] - v[IX(i, j - 1)]		# Vertical velocity to the up and down
+			)
+			pressure[IX(i, j)] = 0.0	# Initialize pressure to 0 at each cell, we will approximate it later
+
+	# As with any other field, we need to calculate the boundaries
+	# Both divergence and pressure are simple scalar fields, same as density, so we treat them the same
+	set_bnd(BoundaryType.SCALAR, divergence)
+	set_bnd(BoundaryType.SCALAR, pressure)
+
+	# This is the same familiar Gauss-Seidel relaxation equation that we have used before
+	# Calculating exact pressure is too expensive, so we approximate with Gauss-Seidel relaxation
+	# Iterating 20 times should be good enough
+	# Once we are finished, we get a pressure field to correct the effect of divergence
+	for k in range(20):
+		for j in range(1, N + 1):
+			for i in range(1, N + 1):
+				
+				# New pressure at this cell = local divergence + average of neighbouring pressures
+				# Notice how the divergence stays static (this loop doesn't modify the divergence array)
+				# But the pressure array changes in each iteration
+				# After repeating that 20 times we arrive at a solution that is good enough - an approximation
+				pressure[IX(i, j)] = (
+					divergence[IX(i, j)] +		# Local divergence
+					pressure[IX(i - 1, j)] +	# Neighbouring pressures
+					pressure[IX(i + 1, j)] +
+					pressure[IX(i, j - 1)] +
+					pressure[IX(i, j + 1)]
+				) / 4.0							# Four neighbours so we divide to get an average
+
+		set_bnd(BoundaryType.SCALAR, pressure)
+
+	# Here we subtract the pressure gradient from velocity to eliminate the "unnatural" part
+	# The right hand side is the gradient calculation
+	# Technically, a gradient of a scalar field (which pressure is) is a vector field
+	# Such field contains vectors which point in the direction where pressure increases the fastest
+	# And the magnitude of those vectors tells us how steep that increase is
+	# We operate on a grid, so we can approximate this with neighbours - left and right for horizontal
+	# velocity and top and down for vertical velocity.
+	# We need to divide by 2h because the distance between the neighbours is 2h
+	# So we arrive at equation: (p[i+1] - p[i-1]) / (2h)
+	# After simplification it becomes: 0.5 * (p[i+1] - p[i-1]) / h
+	for j in range(1, N + 1):
+		for i in range(1, N + 1):
+			u[IX(i, j)] -= 0.5 * (pressure[IX(i + 1, j)] - pressure[IX(i - 1, j)]) / h
+			v[IX(i, j)] -= 0.5 * (pressure[IX(i, j + 1)] - pressure[IX(i, j - 1)]) / h
+
+	set_bnd(BoundaryType.VELOCITY_HORIZONTAL, u)
+	set_bnd(BoundaryType.VELOCITY_VERTICAL, v)
+
 # Diffusion simply means spreading the density to the neighbouring cells
 # Think of it like putting a drop of paint in water - it will spread
 # This uses what is called "Gauss-Seidel relaxation", which basically means
@@ -243,7 +332,7 @@ func diffuse_density(delta: float) -> void:
 						density[IX(i, j + 1)]		# :)
 					)
 				) / (1.0 + 4.0 * a)					# This balances the math, since we add densities from 5 cells (this one + 4 neighbours). Without this, the density would grow too much (try it!)
-		set_bnd(BoundaryType.DENSITY, density)
+		set_bnd(BoundaryType.SCALAR, density)
 
 # Diffusion here can be understood as "spreading among neighbour cells"
 # Just as we diffuse density, we now do the same for velocity
@@ -305,7 +394,7 @@ func set_bnd_original(b: int, grid: PackedFloat32Array) -> void:
 	grid[IX(N + 1, N + 1)] = 0.5 * (grid[IX(N, N + 1)] + grid[IX(N + 1, N)])
 
 enum BoundaryType {
-	DENSITY,
+	SCALAR,
 	VELOCITY_HORIZONTAL,
 	VELOCITY_VERTICAL
 }
@@ -340,7 +429,7 @@ func set_bnd(boundary: BoundaryType, grid: PackedFloat32Array) -> void:
 		var topmost_simulated_cell_index = IX(i, N)
 		
 		# For density, we simply copy the value of the nearest simulated cell
-		if boundary == BoundaryType.DENSITY:
+		if boundary == BoundaryType.SCALAR:
 			grid[left_boundary_cell_index] = grid[leftmost_simulated_cell_index]
 			grid[right_boundary_cell_index] = grid[rightmost_simulated_cell_index]
 			grid[bottom_boundary_cell_index] = grid[bottommost_simulated_cell_index]
@@ -424,9 +513,11 @@ func _input(event):
 func _process(delta: float) -> void:
 	copy_velocity_to_prev()
 	diffuse_velocity(delta)
+	project_velocity()
 	
 	copy_velocity_to_prev()
 	advect_velocity(delta)
+	project_velocity()
 	
 	copy_density_to_prev()
 	diffuse_density(delta)
@@ -435,7 +526,7 @@ func _process(delta: float) -> void:
 	advect_density(delta)
 	
 	fade_density(delta)
-	fade_velocity(delta)
+	#fade_velocity(delta)
 	
 	queue_redraw()
 
