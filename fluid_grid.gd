@@ -13,8 +13,20 @@ extends Node2D
 @export var velocity_diffuse_rate := 0.001		# Strength of velocity diffusion effect
 @export var velocity_diffuse_iterations := 20	# How many iterations when diffusing velocity
 
+@export var ship_speed := 220.0
+@export var ship_turn_smoothing := 12.0
+@export var flame_density_amount := 3.0
+@export var flame_velocity_amount := 18.0
+@export var flame_radius := 2
+@export var flame_spawn_distance := 22.0
+
 var is_dragging := false
 var last_mouse_cell := Vector2i.ZERO
+
+var ship_pos := Vector2.ZERO
+var ship_velocity := Vector2.ZERO
+var turret_angle := 0.0
+var is_firing := false
 
 var size := 0
 
@@ -50,6 +62,11 @@ func _ready():
 	v_prev.resize(size)
 	pressure.resize(size)
 	divergence.resize(size)
+	
+	ship_pos = Vector2(
+		(N + 2) * cell_size * 0.5,
+		(N + 2) * cell_size * 0.5
+	)
 
 	queue_redraw()
 
@@ -474,21 +491,21 @@ func set_bnd(boundary: BoundaryType, grid: PackedFloat32Array) -> void:
 	grid[corner_SE] = 0.5 * (grid[corner_SE_left_neighbour] + grid[corner_SE_top_neighbour])		# SE corner = left neighbour + top neighbour
 	grid[corner_NE] = 0.5 * (grid[corner_NE_left_neighbour] + grid[corner_NE_bottom_neighbour])		# NE corner = left neighbour + bottom neighbour
 
-# This is the standard Godot function for processing input
-# We want to detect when a mouse is dragged while clicked and the inject
-# both density and velocity at the relevant cells
 func _input(event):
 	if event is InputEventMouseButton:
-		is_dragging = event.pressed
-		last_mouse_cell = cell_from_mouse(to_local(event.position))
-
+		if event.button_index == MOUSE_BUTTON_LEFT:
+			is_firing = event.pressed
+		
+		if event.button_index == MOUSE_BUTTON_RIGHT:
+			is_dragging = event.pressed
+	
 	if event is InputEventMouseMotion and is_dragging:
 		var local_pos := to_local(event.position)
 		var cell := cell_from_mouse(local_pos)
-
+	
 		var i := cell.x
 		var j := cell.y
-
+	
 		if i >= 1 and i <= N and j >= 1 and j <= N:
 			# event.relative stores the relative difference between last time
 			# this function was called and this time
@@ -496,21 +513,57 @@ func _input(event):
 			# we use that to decide how much velocity to add
 			var delta_velocity : Vector2 = event.relative * velocity_add_scale
 			var idx := IX(i, j)
-
+	
 			# Inject the velocity into the cell
 			# u stores horizontal velocity, v stores vertical velocity
 			u[idx] += delta_velocity.x
 			v[idx] += delta_velocity.y
-
+	
 			# Inject density
-			density[idx] += 1.0
-
+			#density[idx] += 1.0
+	
 			queue_redraw()
+
+## This is the standard Godot function for processing input
+## We want to detect when a mouse is dragged while clicked and the inject
+## both density and velocity at the relevant cells
+#func _input(event):
+	#if event is InputEventMouseButton:
+		#is_dragging = event.pressed
+		#last_mouse_cell = cell_from_mouse(to_local(event.position))
+#
+	#if event is InputEventMouseMotion and is_dragging:
+		#var local_pos := to_local(event.position)
+		#var cell := cell_from_mouse(local_pos)
+#
+		#var i := cell.x
+		#var j := cell.y
+#
+		#if i >= 1 and i <= N and j >= 1 and j <= N:
+			## event.relative stores the relative difference between last time
+			## this function was called and this time
+			## in this case, it tells us how far the mouse has travelled
+			## we use that to decide how much velocity to add
+			#var delta_velocity : Vector2 = event.relative * velocity_add_scale
+			#var idx := IX(i, j)
+#
+			## Inject the velocity into the cell
+			## u stores horizontal velocity, v stores vertical velocity
+			#u[idx] += delta_velocity.x
+			#v[idx] += delta_velocity.y
+#
+			## Inject density
+			#density[idx] += 1.0
+#
+			#queue_redraw()
 
 # This is the standard Godot function called every frame
 # It's the heart of our simulation
 # The "delta" variable hold the amount of time that passed since the last frame
 func _process(delta: float) -> void:
+	update_ship(delta)
+	inject_flamethrower(delta)
+	
 	copy_velocity_to_prev()
 	diffuse_velocity(delta)
 	project_velocity()
@@ -536,6 +589,7 @@ func _process(delta: float) -> void:
 func _draw():
 	_draw_grid()
 	_draw_velocity_arrows()
+	_draw_ship()
 
 # Draw the grid of (N+2)*(N+2) with different colors for inner and boundary cells
 func _draw_grid():
@@ -550,9 +604,20 @@ func _draw_grid():
 			if is_boundary:
 				fill = Color(0.16, 0.08, 0.08)
 			else:
-				# Even though density can go above 1.0, we need to clamp it to values between 0.0 and 1.0 for drawing
 				var d : float = clamp(density[IX(i, j)], 0.0, 1.0)
-				fill = Color(d, d, d)
+
+				if d < 0.25:
+					var t := d / 0.25
+					fill = Color(0.08 + t * 0.25, 0.08 + t * 0.08, 0.08)
+				elif d < 0.55:
+					var t := (d - 0.25) / 0.3
+					fill = Color(0.35 + t * 0.65, 0.12 + t * 0.28, 0.02)
+				elif d < 0.8:
+					var t := (d - 0.55) / 0.25
+					fill = Color(1.0, 0.4 + t * 0.45, 0.02)
+				else:
+					var t := (d - 0.8) / 0.2
+					fill = Color(1.0, 0.85 + t * 0.15, 0.1 + t * 0.55)
 
 			draw_rect(rect, fill, true)
 			draw_rect(rect, Color(0.35, 0.35, 0.35), false)
@@ -574,3 +639,87 @@ func _draw_velocity_arrows():
 
 				draw_line(center, end, Color(0.2, 0.8, 1.0), 2.0)
 				draw_circle(end, 2.5, Color(0.2, 0.8, 1.0))
+
+func update_ship(delta: float) -> void:
+	var input_dir := Vector2.ZERO
+
+	if Input.is_key_pressed(KEY_W):
+		input_dir.y -= 1.0
+	if Input.is_key_pressed(KEY_S):
+		input_dir.y += 1.0
+	if Input.is_key_pressed(KEY_A):
+		input_dir.x -= 1.0
+	if Input.is_key_pressed(KEY_D):
+		input_dir.x += 1.0
+
+	input_dir = input_dir.normalized()
+
+	ship_velocity = input_dir * ship_speed
+	ship_pos += ship_velocity * delta
+
+	var min_pos := Vector2(cell_size, cell_size)
+	var max_pos := Vector2((N + 1) * cell_size, (N + 1) * cell_size)
+	ship_pos = ship_pos.clamp(min_pos, max_pos)
+
+	var mouse_pos := get_local_mouse_position()
+	turret_angle = (mouse_pos - ship_pos).angle()
+
+func inject_flamethrower(delta: float) -> void:
+	if not is_firing:
+		return
+
+	var dir := Vector2.RIGHT.rotated(turret_angle)
+	var nozzle_pos := ship_pos + dir * flame_spawn_distance
+	var center_cell := cell_from_mouse(nozzle_pos)
+
+	for y in range(-flame_radius, flame_radius + 1):
+		for x in range(-flame_radius, flame_radius + 1):
+			var i := center_cell.x + x
+			var j := center_cell.y + y
+
+			if i >= 1 and i <= N and j >= 1 and j <= N:
+				var offset := Vector2(x, y)
+				var dist := offset.length()
+
+				if dist <= flame_radius:
+					var falloff := 1.0 - dist / float(flame_radius + 1)
+					var idx := IX(i, j)
+
+					density[idx] += flame_density_amount * falloff * delta
+					u[idx] += dir.x * flame_velocity_amount * falloff
+					v[idx] += dir.y * flame_velocity_amount * falloff
+
+func _draw_ship() -> void:
+	var body_angle := ship_velocity.angle() if ship_velocity.length() > 1.0 else turret_angle
+
+	var forward := Vector2.RIGHT.rotated(body_angle)
+	var right := forward.rotated(PI * 0.5)
+
+	var nose := ship_pos + forward * 16.0
+	var left_wing := ship_pos - forward * 12.0 - right * 10.0
+	var right_wing := ship_pos - forward * 12.0 + right * 10.0
+
+	draw_colored_polygon(
+		PackedVector2Array([nose, left_wing, right_wing]),
+		Color(0.15, 0.18, 0.22)
+	)
+
+	draw_polyline(
+		PackedVector2Array([nose, left_wing, right_wing, nose]),
+		Color(0.7, 0.8, 0.9),
+		2.0
+	)
+
+	var turret_dir := Vector2.RIGHT.rotated(turret_angle)
+	var turret_end := ship_pos + turret_dir * 18.0
+
+	draw_circle(ship_pos, 6.0, Color(0.35, 0.38, 0.42))
+	draw_line(ship_pos, turret_end, Color(0.9, 0.9, 0.75), 4.0)
+
+	if is_firing:
+		draw_line(
+			turret_end,
+			turret_end + turret_dir * 20.0,
+			Color(1.0, 0.45, 0.05),
+			5.0
+		)

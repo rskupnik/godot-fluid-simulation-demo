@@ -9,3 +9,7 @@ script = ExtResource("1_pq8q7")
 velocity_add_scale = 0.2
 velocity_fade_rate = 0.02
 velocity_diffuse_rate = 0.01
+ship_speed = 200.0
+flame_density_amount = 20.0
+flame_velocity_amount = 4.0
+flame_radius = 1
