@@ -8,25 +8,29 @@ extends Node2D
 @export var density_diffuse_iterations := 20	# How many iterations when diffusing density
 
 @export var velocity_draw_scale := 20.0
-@export var velocity_add_scale := 0.06
-@export var velocity_fade_rate := 0.2			# Strength of velocity fade effect
-@export var velocity_diffuse_rate := 0.001		# Strength of velocity diffusion effect
+@export var velocity_add_scale := 0.2
+@export var velocity_fade_rate := 0.02			# Strength of velocity fade effect
+@export var velocity_diffuse_rate := 0.01		# Strength of velocity diffusion effect
 @export var velocity_diffuse_iterations := 20	# How many iterations when diffusing velocity
 
-@export var ship_speed := 220.0
-@export var ship_turn_smoothing := 12.0
-@export var flame_density_amount := 3.0
-@export var flame_velocity_amount := 18.0
-@export var flame_radius := 2
-@export var flame_spawn_distance := 22.0
+@export var rocket_thrust := 420.0
+@export var rocket_rotation_speed := 3.5
+@export var rocket_gravity := 180.0
+@export var rocket_drag := 0.985
+
+@export var flame_density_amount := 20.0
+@export var flame_velocity_amount := 4.0
+@export var flame_radius := 1
+@export var flame_spawn_distance := 18.0
 
 var is_dragging := false
 var last_mouse_cell := Vector2i.ZERO
 
-var ship_pos := Vector2.ZERO
-var ship_velocity := Vector2.ZERO
-var turret_angle := 0.0
-var is_firing := false
+var rocket_pos := Vector2.ZERO
+var rocket_velocity := Vector2.ZERO
+var rocket_angle := -PI * 0.5
+var is_thrusting := false
+var draw_velocity := true
 
 var size := 0
 
@@ -42,7 +46,6 @@ var u_prev: PackedFloat32Array
 var v: PackedFloat32Array
 var v_prev: PackedFloat32Array
 
-# TODO: What are those?
 # Helper fields for projection
 var pressure: PackedFloat32Array
 var divergence: PackedFloat32Array
@@ -63,7 +66,7 @@ func _ready():
 	pressure.resize(size)
 	divergence.resize(size)
 	
-	ship_pos = Vector2(
+	rocket_pos = Vector2(
 		(N + 2) * cell_size * 0.5,
 		(N + 2) * cell_size * 0.5
 	)
@@ -492,77 +495,16 @@ func set_bnd(boundary: BoundaryType, grid: PackedFloat32Array) -> void:
 	grid[corner_NE] = 0.5 * (grid[corner_NE_left_neighbour] + grid[corner_NE_bottom_neighbour])		# NE corner = left neighbour + bottom neighbour
 
 func _input(event):
-	if event is InputEventMouseButton:
-		if event.button_index == MOUSE_BUTTON_LEFT:
-			is_firing = event.pressed
-		
-		if event.button_index == MOUSE_BUTTON_RIGHT:
-			is_dragging = event.pressed
-	
-	if event is InputEventMouseMotion and is_dragging:
-		var local_pos := to_local(event.position)
-		var cell := cell_from_mouse(local_pos)
-	
-		var i := cell.x
-		var j := cell.y
-	
-		if i >= 1 and i <= N and j >= 1 and j <= N:
-			# event.relative stores the relative difference between last time
-			# this function was called and this time
-			# in this case, it tells us how far the mouse has travelled
-			# we use that to decide how much velocity to add
-			var delta_velocity : Vector2 = event.relative * velocity_add_scale
-			var idx := IX(i, j)
-	
-			# Inject the velocity into the cell
-			# u stores horizontal velocity, v stores vertical velocity
-			u[idx] += delta_velocity.x
-			v[idx] += delta_velocity.y
-	
-			# Inject density
-			#density[idx] += 1.0
-	
-			queue_redraw()
-
-## This is the standard Godot function for processing input
-## We want to detect when a mouse is dragged while clicked and the inject
-## both density and velocity at the relevant cells
-#func _input(event):
-	#if event is InputEventMouseButton:
-		#is_dragging = event.pressed
-		#last_mouse_cell = cell_from_mouse(to_local(event.position))
-#
-	#if event is InputEventMouseMotion and is_dragging:
-		#var local_pos := to_local(event.position)
-		#var cell := cell_from_mouse(local_pos)
-#
-		#var i := cell.x
-		#var j := cell.y
-#
-		#if i >= 1 and i <= N and j >= 1 and j <= N:
-			## event.relative stores the relative difference between last time
-			## this function was called and this time
-			## in this case, it tells us how far the mouse has travelled
-			## we use that to decide how much velocity to add
-			#var delta_velocity : Vector2 = event.relative * velocity_add_scale
-			#var idx := IX(i, j)
-#
-			## Inject the velocity into the cell
-			## u stores horizontal velocity, v stores vertical velocity
-			#u[idx] += delta_velocity.x
-			#v[idx] += delta_velocity.y
-#
-			## Inject density
-			#density[idx] += 1.0
-#
-			#queue_redraw()
+	if event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_Q:
+			draw_velocity = !draw_velocity
 
 # This is the standard Godot function called every frame
 # It's the heart of our simulation
 # The "delta" variable hold the amount of time that passed since the last frame
 func _process(delta: float) -> void:
-	update_ship(delta)
-	inject_flamethrower(delta)
+	update_rocket(delta)
+	inject_rocket_flame(delta)
 	
 	copy_velocity_to_prev()
 	diffuse_velocity(delta)
@@ -579,7 +521,6 @@ func _process(delta: float) -> void:
 	advect_density(delta)
 	
 	fade_density(delta)
-	#fade_velocity(delta)
 	
 	queue_redraw()
 
@@ -588,8 +529,9 @@ func _process(delta: float) -> void:
 # We also want to draw velocities at each cell as lines
 func _draw():
 	_draw_grid()
-	_draw_velocity_arrows()
-	_draw_ship()
+	if draw_velocity:
+		_draw_velocity_arrows()
+	_draw_rocket()
 
 # Draw the grid of (N+2)*(N+2) with different colors for inner and boundary cells
 func _draw_grid():
@@ -606,6 +548,7 @@ func _draw_grid():
 			else:
 				var d : float = clamp(density[IX(i, j)], 0.0, 1.0)
 
+				# Flame colors
 				if d < 0.25:
 					var t := d / 0.25
 					fill = Color(0.08 + t * 0.25, 0.08 + t * 0.08, 0.08)
@@ -640,36 +583,91 @@ func _draw_velocity_arrows():
 				draw_line(center, end, Color(0.2, 0.8, 1.0), 2.0)
 				draw_circle(end, 2.5, Color(0.2, 0.8, 1.0))
 
-func update_ship(delta: float) -> void:
-	var input_dir := Vector2.ZERO
+# Just a silly rocket
+func _draw_rocket() -> void:
+	var forward := Vector2.RIGHT.rotated(rocket_angle)
+	var right := forward.rotated(PI * 0.5)
 
-	if Input.is_key_pressed(KEY_W):
-		input_dir.y -= 1.0
-	if Input.is_key_pressed(KEY_S):
-		input_dir.y += 1.0
+	var nose := rocket_pos + forward * 18.0
+	var left_fin := rocket_pos - forward * 14.0 - right * 9.0
+	var right_fin := rocket_pos - forward * 14.0 + right * 9.0
+
+	draw_colored_polygon(
+		PackedVector2Array([nose, left_fin, right_fin]),
+		Color(0.75, 0.78, 0.82)
+	)
+
+	draw_polyline(
+		PackedVector2Array([nose, left_fin, right_fin, nose]),
+		Color(0.15, 0.18, 0.22),
+		2.0
+	)
+
+	var nozzle_center := rocket_pos - forward * 15.0
+	draw_circle(nozzle_center, 4.0, Color(0.12, 0.12, 0.12))
+
+	if is_thrusting:
+		var flame_tip := nozzle_center - forward * 24.0
+		var flame_left := nozzle_center + right * 5.0
+		var flame_right := nozzle_center - right * 5.0
+
+		draw_colored_polygon(
+			PackedVector2Array([flame_left, flame_right, flame_tip]),
+			Color(1.0, 0.45, 0.05)
+		)
+
+		draw_colored_polygon(
+			PackedVector2Array([
+				nozzle_center + right * 2.5,
+				nozzle_center - right * 2.5,
+				nozzle_center - forward * 14.0
+			]),
+			Color(1.0, 0.9, 0.25)
+		)
+
+# Rocket controls and very basic gravity drag effect
+func update_rocket(delta: float) -> void:
 	if Input.is_key_pressed(KEY_A):
-		input_dir.x -= 1.0
+		rocket_angle -= rocket_rotation_speed * delta
 	if Input.is_key_pressed(KEY_D):
-		input_dir.x += 1.0
+		rocket_angle += rocket_rotation_speed * delta
 
-	input_dir = input_dir.normalized()
+	is_thrusting = Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_SPACE)
 
-	ship_velocity = input_dir * ship_speed
-	ship_pos += ship_velocity * delta
+	var forward := Vector2.RIGHT.rotated(rocket_angle)
+
+	rocket_velocity.y += rocket_gravity * delta
+
+	if is_thrusting:
+		rocket_velocity += forward * rocket_thrust * delta
+
+	rocket_velocity *= rocket_drag
+	rocket_pos += rocket_velocity * delta
 
 	var min_pos := Vector2(cell_size, cell_size)
 	var max_pos := Vector2((N + 1) * cell_size, (N + 1) * cell_size)
-	ship_pos = ship_pos.clamp(min_pos, max_pos)
 
-	var mouse_pos := get_local_mouse_position()
-	turret_angle = (mouse_pos - ship_pos).angle()
+	if rocket_pos.x < min_pos.x:
+		rocket_pos.x = min_pos.x
+		rocket_velocity.x *= -0.35
+	if rocket_pos.x > max_pos.x:
+		rocket_pos.x = max_pos.x
+		rocket_velocity.x *= -0.35
+	if rocket_pos.y < min_pos.y:
+		rocket_pos.y = min_pos.y
+		rocket_velocity.y *= -0.35
+	if rocket_pos.y > max_pos.y:
+		rocket_pos.y = max_pos.y
+		rocket_velocity.y *= -0.35
 
-func inject_flamethrower(delta: float) -> void:
-	if not is_firing:
+# If the rocket is thrusting - inject both density and velocity at the thruster location
+func inject_rocket_flame(delta: float) -> void:
+	if not is_thrusting:
 		return
 
-	var dir := Vector2.RIGHT.rotated(turret_angle)
-	var nozzle_pos := ship_pos + dir * flame_spawn_distance
+	var forward := Vector2.RIGHT.rotated(rocket_angle)
+	var backward := -forward
+	var nozzle_pos := rocket_pos + backward * flame_spawn_distance
 	var center_cell := cell_from_mouse(nozzle_pos)
 
 	for y in range(-flame_radius, flame_radius + 1):
@@ -686,40 +684,6 @@ func inject_flamethrower(delta: float) -> void:
 					var idx := IX(i, j)
 
 					density[idx] += flame_density_amount * falloff * delta
-					u[idx] += dir.x * flame_velocity_amount * falloff
-					v[idx] += dir.y * flame_velocity_amount * falloff
 
-func _draw_ship() -> void:
-	var body_angle := ship_velocity.angle() if ship_velocity.length() > 1.0 else turret_angle
-
-	var forward := Vector2.RIGHT.rotated(body_angle)
-	var right := forward.rotated(PI * 0.5)
-
-	var nose := ship_pos + forward * 16.0
-	var left_wing := ship_pos - forward * 12.0 - right * 10.0
-	var right_wing := ship_pos - forward * 12.0 + right * 10.0
-
-	draw_colored_polygon(
-		PackedVector2Array([nose, left_wing, right_wing]),
-		Color(0.15, 0.18, 0.22)
-	)
-
-	draw_polyline(
-		PackedVector2Array([nose, left_wing, right_wing, nose]),
-		Color(0.7, 0.8, 0.9),
-		2.0
-	)
-
-	var turret_dir := Vector2.RIGHT.rotated(turret_angle)
-	var turret_end := ship_pos + turret_dir * 18.0
-
-	draw_circle(ship_pos, 6.0, Color(0.35, 0.38, 0.42))
-	draw_line(ship_pos, turret_end, Color(0.9, 0.9, 0.75), 4.0)
-
-	if is_firing:
-		draw_line(
-			turret_end,
-			turret_end + turret_dir * 20.0,
-			Color(1.0, 0.45, 0.05),
-			5.0
-		)
+					u[idx] += backward.x * flame_velocity_amount * falloff
+					v[idx] += backward.y * flame_velocity_amount * falloff
